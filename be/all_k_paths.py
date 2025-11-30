@@ -1,10 +1,12 @@
 """Helpers to compute K-shortest paths for every vehicle pair."""
 
 import numpy as np
+from numba import njit
 
 from .yen import yen_k_shortest_paths
 
 
+@njit
 def compute_all_k_shortest_paths(
     adjacency_travel_time: np.ndarray,
     vehicle_origin: np.ndarray,
@@ -23,7 +25,9 @@ def compute_all_k_shortest_paths(
         source = int(vehicle_origin[vehicle])
         target = int(vehicle_destination[vehicle])
         costs_v, paths_v = yen_k_shortest_paths(adjacency_travel_time, source, target, k_paths)
-        base_costs[vehicle] = costs_v
-        all_paths[vehicle] = paths_v
+        for k_idx in range(k_paths):
+            base_costs[vehicle, k_idx] = costs_v[k_idx]
+            for node_idx in range(n_nodes):
+                all_paths[vehicle, k_idx, node_idx] = paths_v[k_idx, node_idx]
 
     return base_costs, all_paths

@@ -1,19 +1,24 @@
 """Greedy + regret assignment using Yen K paths and congestion penalty."""
 
 import numpy as np
+from numba import njit
 
 from .all_k_paths import compute_all_k_shortest_paths
 from .edge_utils import build_edge_list_and_index
-from .incremental_cost import compute_incremental_cost_for_path
+from .incremental_cost import compute_incremental_cost_time_aware
+from ..common.time_slots import add_path_to_time_slots
 
 
+@njit
 def solve_routing_with_penalty_greedy_regret(
     adjacency_travel_time: np.ndarray,
     adjacency_bandwidth: np.ndarray,
     vehicle_origin: np.ndarray,
     vehicle_destination: np.ndarray,
+    vehicle_start_time: np.ndarray,
     k_paths: int = 3,
     beta_penalty: float = 1.0,
+    max_slots_per_edge: int = 256,
     debug: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Assign vehicles greedily with regret heuristic using congestion penalty."""
@@ -36,6 +41,8 @@ def solve_routing_with_penalty_greedy_regret(
     assigned = np.zeros(n_vehicles, dtype=np.bool_)
     remaining = n_vehicles
 
+    edge_time_slots = np.full((n_edges, max_slots_per_edge, 2), -1.0, dtype=np.float64)
+
     T1 = np.zeros(n_vehicles, dtype=np.float64)
     T2 = np.zeros(n_vehicles, dtype=np.float64)
     regret = np.zeros(n_vehicles, dtype=np.float64)
@@ -45,10 +52,11 @@ def solve_routing_with_penalty_greedy_regret(
     iteration = 0
 
     while remaining > 0:
-        T1.fill(np.inf)
-        T2.fill(np.inf)
-        regret.fill(-1.0)
-        best_k_for_v.fill(-1)
+        for vehicle in range(n_vehicles):
+            T1[vehicle] = np.inf
+            T2[vehicle] = np.inf
+            regret[vehicle] = -1.0
+            best_k_for_v[vehicle] = -1
 
         for vehicle in range(n_vehicles):
             if assigned[vehicle]:
@@ -58,12 +66,15 @@ def solve_routing_with_penalty_greedy_regret(
                 if base_cost == np.inf:
                     continue
                 path = all_paths[vehicle, k_idx]
-                total_cost = compute_incremental_cost_for_path(
+                start_time = vehicle_start_time[vehicle]
+                total_cost = compute_incremental_cost_time_aware(
                     path,
                     base_cost,
+                    start_time,
+                    adjacency_travel_time,
                     edge_index_matrix,
                     edge_bandwidth,
-                    edge_loads,
+                    edge_time_slots,
                     beta_penalty,
                 )
                 if total_cost < T1[vehicle]:
@@ -77,17 +88,28 @@ def solve_routing_with_penalty_greedy_regret(
                 regret[vehicle] = BIG_REGRET if T2[vehicle] == np.inf else T2[vehicle] - T1[vehicle]
 
         if debug:
-            print(f"\n===== ITERATION {iteration} =====")
-            print("v | assigned | best_k |     T1     |     T2     |      regret")
+            print("\n===== ITERATION =====")
+            print(iteration)
+            print("v | assigned | best_k | T1 | T2 | regret")
             for vehicle in range(n_vehicles):
                 if assigned[vehicle]:
                     continue
                 if best_k_for_v[vehicle] == -1:
-                    print(f"{vehicle:2d} |    1?    |   -1   |       inf |       inf |         -  ")
+                    print("vehicle", vehicle, "assigned", 1, "best_k", -1, "T1", "inf", "T2", "inf", "regret", -1.0)
                 else:
                     print(
-                        f"{vehicle:2d} |    0     | {best_k_for_v[vehicle]:5d} | "
-                        f"{T1[vehicle]:9.2f} | {T2[vehicle]:9.2f} | {regret[vehicle]:11.2f}"
+                        "vehicle",
+                        vehicle,
+                        "assigned",
+                        0,
+                        "best_k",
+                        best_k_for_v[vehicle],
+                        "T1",
+                        T1[vehicle],
+                        "T2",
+                        T2[vehicle],
+                        "regret",
+                        regret[vehicle],
                     )
 
         best_vehicle = -1
@@ -110,7 +132,8 @@ def solve_routing_with_penalty_greedy_regret(
 
         k_star = best_k_for_v[best_vehicle]
         chosen_path = all_paths[best_vehicle, k_star]
-        routes_final[best_vehicle] = chosen_path
+        for node_idx in range(n_nodes):
+            routes_final[best_vehicle, node_idx] = chosen_path[node_idx]
 
         for idx in range(n_nodes - 1):
             u = chosen_path[idx]
@@ -120,6 +143,16 @@ def solve_routing_with_penalty_greedy_regret(
             edge_idx = edge_index_matrix[u, w]
             if edge_idx >= 0:
                 edge_loads[edge_idx] += 1
+
+        start_time_best = vehicle_start_time[best_vehicle]
+        add_path_to_time_slots(
+            edge_time_slots,
+            chosen_path,
+            start_time_best,
+            adjacency_travel_time,
+            edge_index_matrix,
+            n_nodes,
+        )
 
         assigned[best_vehicle] = True
         remaining -= 1

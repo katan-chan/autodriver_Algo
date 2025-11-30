@@ -310,6 +310,48 @@ def visualize_traffic_scenario_plotly_planar(
     fig.show(renderer="browser")
 
 
+def build_algorithm_dropdown_figures(
+    data: dict,
+    solutions: dict[str, dict],
+    time_min: float,
+    time_max: float,
+    n_time_steps: int = 20,
+    node_size: int = 10,
+) -> list[tuple[str, go.Figure]]:
+    """Build visualizations for each algorithm to be used in a dropdown list.
+
+    Args:
+        data: scenario data dict.
+        solutions: mapping from name to dict containing routes, edge_time_slots, edge metadata.
+        time_min/time_max: range of times for sampling loads.
+        n_time_steps: number of samples for timeline.
+        node_size: graph node size.
+
+    Returns:
+        List of (label, figure) tuples.
+    """
+
+    dropdown_figs: list[tuple[str, go.Figure]] = []
+    for name, payload in solutions.items():
+        fig = visualize_routes_with_time_slider(
+            data=data,
+            routes=payload["routes"],
+            edge_time_slots=payload["edge_time_slots"],
+            edge_u_arr=payload["edge_u"],
+            edge_v_arr=payload["edge_v"],
+            edge_bandwidth_arr=payload["edge_bandwidth"],
+            time_min=time_min,
+            time_max=time_max,
+            n_time_steps=n_time_steps,
+            node_size=node_size,
+            title=f"Routes + Load/BW ({name})",
+            return_fig=True,
+        )
+        dropdown_figs.append((name, fig))
+
+    return dropdown_figs
+
+
 def visualize_routes_with_time_slider(
     data: dict,
     routes: np.ndarray,
@@ -450,50 +492,65 @@ def visualize_routes_with_time_slider(
     for trace in timeline_traces:
         fig.add_trace(trace, row=1, col=2)
 
-    # Edge labels - one trace per time step, visibility controlled by dropdown
-    label_traces_start_idx = len(fig.data)
-    
-    for t_idx, t in enumerate(time_points):
-        edge_text = []
-        text_colors = []
+    # Precompute label texts and colors per time
+    edge_text_sets: list[list[str]] = []
+    edge_color_sets: list[list[str]] = []
+    for t_idx in range(n_time_steps):
+        texts = []
+        colors = []
         for e_idx in range(n_edges):
             load = loads_over_time[e_idx, t_idx]
             bw = int(edge_bandwidth_arr[e_idx])
-            edge_text.append(f"{load}/{bw}")
-            # Color based on load ratio
+            texts.append(f"{load}/{bw}")
             ratio = load / bw if bw > 0 else 0
             if ratio <= 0.5:
-                text_colors.append("green")
+                colors.append("#2e7d32")
             elif ratio <= 1.0:
-                text_colors.append("orange")
+                colors.append("#f9a825")
             else:
-                text_colors.append("red")
-        
-        fig.add_trace(go.Scatter(
+                colors.append("#c62828")
+        edge_text_sets.append(texts)
+        edge_color_sets.append(colors)
+
+    # Single label trace (markers + text) whose style is updated via slider
+    fig.add_trace(
+        go.Scatter(
             x=mid_x,
             y=mid_y,
-            mode="text",
-            text=edge_text,
+            mode="markers+text",
+            marker=dict(
+                size=14,
+                color=edge_color_sets[0],
+                opacity=0.5,
+                line=dict(width=1, color="#444"),
+            ),
+            text=edge_text_sets[0],
             textposition="top center",
-            textfont=dict(size=9, color=text_colors, family="Arial Black"),
+            textfont=dict(size=9, color="black", family="Arial Black"),
             hoverinfo="skip",
             showlegend=False,
-            visible=(t_idx == 0),  # Only first visible initially
-        ), row=1, col=1)
+        ),
+        row=1,
+        col=1,
+    )
+    label_trace_idx = len(fig.data) - 1
 
-    # Create slider steps
-    n_label_traces = n_time_steps
+    # Create slider steps (restyle marker colors + text only for label trace)
     slider_steps = []
     for t_idx, t in enumerate(time_points):
-        # Create visibility array
-        visibility = [True] * label_traces_start_idx  # Keep static traces visible
-        visibility += [i == t_idx for i in range(n_label_traces)]  # Show only this time's labels
-        
-        slider_steps.append(dict(
-            args=[{"visible": visibility}],
-            label=f"{t:.0f}",
-            method="update",
-        ))
+        slider_steps.append(
+            dict(
+                args=[
+                    {
+                        "marker.color": [edge_color_sets[t_idx]],
+                        "text": [edge_text_sets[t_idx]],
+                    },
+                    [label_trace_idx],
+                ],
+                label=f"{t:.0f}",
+                method="restyle",
+            )
+        )
 
     fig.update_layout(
         title=title,
@@ -512,7 +569,16 @@ def visualize_routes_with_time_slider(
             "steps": slider_steps,
         }],
         height=750,
-        legend=dict(orientation="v", yanchor="top", y=0.98, xanchor="left", x=1.02),
+        legend=dict(
+            orientation="v",
+            yanchor="top",
+            y=0.98,
+            xanchor="left",
+            x=1.02,
+            itemclick="toggle",
+            itemdoubleclick="toggleothers",
+        ),
+        uirevision="routes_view",
     )
 
     fig.update_xaxes(visible=False, row=1, col=1)
@@ -535,6 +601,7 @@ def visualize_edge_load_timeline(
     only_overloaded: bool = True,
     title: str = "Edge Load Over Time",
     return_fig: bool = False,
+    show_line_chart: bool | None = None,
 ) -> go.Figure | None:
     """
     Visualize edge load over time as a heatmap + line chart for top edges.
@@ -572,7 +639,8 @@ def visualize_edge_load_timeline(
         top_indices = np.argsort(max_loads)[::-1][:top_k_edges]
     
     # Nếu nhiều cạnh, chỉ hiện heatmap (line chart sẽ quá lộn xộn)
-    show_line_chart = len(top_indices) <= 15
+    if show_line_chart is None:
+        show_line_chart = len(top_indices) <= 15
     
     if show_line_chart:
         fig = make_subplots(

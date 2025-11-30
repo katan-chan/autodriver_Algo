@@ -6,15 +6,16 @@ import numpy as np
 from .fake_data import generate_planar_traffic_data
 from .visualize import (
     visualize_traffic_scenario_plotly_planar,
-    visualize_routes_with_time_slider,
     visualize_edge_load_timeline,
-    visualize_edge_gantt_chart,
     visualize_overload_summary,
+    build_algorithm_dropdown_figures,
+    visualize_routes_with_time_slider,
 )
 from .visualize_html import export_figures_to_tabbed_html
 from .algorithms import (
     solve_routing_without_penalty,
     solve_routing_with_time_penalty_greedy_regret,
+    solve_rank_maximal_matching,
     evaluate_time_based_solution,
     print_time_evaluation_report,
     build_load_timeline,
@@ -53,7 +54,20 @@ def main() -> None:
     )
 
     # ============================================================
-    # 3. Thuật toán chính: Greedy + Regret với TIME-BASED bandwidth
+    # 3. Thuật toán mới: Rank-Maximal Matching (static)
+    # ============================================================
+    print("\n=== Running Rank-Maximal Matching (Static, K=10) ===")
+    routes_rank, edge_loads_rank, assigned_idx_rank = solve_rank_maximal_matching(
+        adjacency_travel_time=data["adjacency_travel_time"],
+        adjacency_bandwidth=data["adjacency_bandwidth"],
+        vehicle_origin=data["vehicle_origin"],
+        vehicle_destination=data["vehicle_destination"],
+        k_paths=k_paths,
+        beta_penalty=beta_penalty,
+    )
+
+    # ============================================================
+    # 4. Thuật toán chính: Greedy + Regret với TIME-BASED bandwidth
     # ============================================================
     print("\n=== Running Greedy + Regret (Time-Based, K=10) ===")
     routes_time, edge_time_slots, base_costs = solve_routing_with_time_penalty_greedy_regret(
@@ -68,7 +82,7 @@ def main() -> None:
     )
 
     # ============================================================
-    # 4. Đánh giá với TIME-BASED cost function
+    # 5. Đánh giá với TIME-BASED cost function
     # ============================================================
     print("\n=== Evaluating Solutions ===")
     time_sample_step = 5.0  # sample mỗi 5 giây
@@ -92,22 +106,37 @@ def main() -> None:
         max_slots_per_edge,
         time_sample_step,
     )
+
+    eval_rank = evaluate_time_based_solution(
+        routes_rank,
+        data["vehicle_start_time"],
+        data["adjacency_travel_time"],
+        data["adjacency_bandwidth"],
+        beta_penalty,
+        max_slots_per_edge,
+        time_sample_step,
+    )
     
     print_time_evaluation_report("Baseline: Shortest Path", eval_baseline)
     print_time_evaluation_report("Greedy + Regret (Time-Based)", eval_time)
+    print_time_evaluation_report("Rank-Maximal Matching", eval_rank)
     
     # So sánh nhanh
     print("\n" + "=" * 60)
     print("  SO SÁNH")
     print("=" * 60)
-    cost_diff = eval_baseline[2] - eval_time[2]  # total_cost
-    cost_diff_pct = cost_diff / eval_baseline[2] * 100 if eval_baseline[2] > 0 else 0
-    print(f"  Greedy+Regret tiết kiệm: {cost_diff:.2f} ({cost_diff_pct:.1f}% tổng cost)")
+    cost_time_gain = eval_baseline[2] - eval_time[2]
+    cost_time_gain_pct = cost_time_gain / eval_baseline[2] * 100 if eval_baseline[2] > 0 else 0
+    cost_rank_gain = eval_baseline[2] - eval_rank[2]
+    cost_rank_gain_pct = cost_rank_gain / eval_baseline[2] * 100 if eval_baseline[2] > 0 else 0
+    print(f"  Greedy+Regret tiết kiệm: {cost_time_gain:.2f} ({cost_time_gain_pct:.1f}% tổng cost)")
+    print(f"  Rank-Max Matching tiết kiệm: {cost_rank_gain:.2f} ({cost_rank_gain_pct:.1f}% tổng cost)")
     print(f"  Baseline: {eval_baseline[3]} overloaded intervals, max overflow = {eval_baseline[4]}")
     print(f"  Time-Based: {eval_time[3]} overloaded intervals, max overflow = {eval_time[4]}")
+    print(f"  Rank-Max: {eval_rank[3]} overloaded intervals, max overflow = {eval_rank[4]}")
 
     # ============================================================
-    # 5. Build all visualizations
+    # 6. Build all visualizations
     # ============================================================
     print("\n=== Building Visualizations ===")
     figures = []
@@ -124,103 +153,82 @@ def main() -> None:
     times_time, loads_time = build_load_timeline(
         eval_time[5], time_min, time_max, n_samples,
     )
-    n_edges = len(eval_baseline[7])
-    
-    # 1. Routes with Time Dropdown - Baseline
-    print("  Building: Routes Baseline (dropdown thời gian)")
-    fig = visualize_routes_with_time_slider(
-        data,
-        routes_baseline,
-        eval_baseline[5],  # edge_time_slots
-        eval_baseline[7],  # edge_u
-        eval_baseline[8],  # edge_v
-        eval_baseline[9],  # edge_bandwidth
-        time_min, time_max,
+    times_rank, loads_rank = build_load_timeline(
+        eval_rank[5], time_min, time_max, n_samples,
+    )
+
+    solution_payloads = {
+        "Baseline": {
+            "routes": routes_baseline,
+            "edge_time_slots": eval_baseline[5],
+            "edge_u": eval_baseline[7],
+            "edge_v": eval_baseline[8],
+            "edge_bandwidth": eval_baseline[9],
+            "times": times_baseline,
+            "loads": loads_baseline,
+        },
+        "Rank-Maximal": {
+            "routes": routes_rank,
+            "edge_time_slots": eval_rank[5],
+            "edge_u": eval_rank[7],
+            "edge_v": eval_rank[8],
+            "edge_bandwidth": eval_rank[9],
+            "times": times_rank,
+            "loads": loads_rank,
+        },
+        "Greedy+Regret": {
+            "routes": routes_time,
+            "edge_time_slots": eval_time[5],
+            "edge_u": eval_time[7],
+            "edge_v": eval_time[8],
+            "edge_bandwidth": eval_time[9],
+            "times": times_time,
+            "loads": loads_time,
+        },
+    }
+
+    print("  Building: Routes dropdown figures")
+    routes_dropdown = build_algorithm_dropdown_figures(
+        data=data,
+        solutions=solution_payloads,
+        time_min=time_min,
+        time_max=time_max,
         n_time_steps=20,
         node_size=12,
-        title="Baseline: Routes + Load/BW (chọn thời điểm)",
-        return_fig=True,
     )
-    figures.append(("1. Routes Baseline", fig))
-    
-    # 2. Routes with Time Dropdown - Greedy
-    print("  Building: Routes Greedy+Regret (dropdown thời gian)")
-    fig = visualize_routes_with_time_slider(
-        data,
-        routes_time,
-        eval_time[5],  # edge_time_slots
-        eval_time[7],  # edge_u
-        eval_time[8],  # edge_v
-        eval_time[9],  # edge_bandwidth
-        time_min, time_max,
-        n_time_steps=20,
-        node_size=12,
-        title="Greedy+Regret: Routes + Load/BW (chọn thời điểm)",
-        return_fig=True,
-    )
-    figures.append(("2. Routes Greedy", fig))
-    
-    # 3. Overload Summary - Baseline
-    print("  Building: Overload Summary Baseline")
-    fig = visualize_overload_summary(
-        times_baseline, loads_baseline, eval_baseline[9],
-        title="Baseline: Tổng quan quá tải",
-        return_fig=True,
-    )
-    figures.append(("3. Overload Baseline", fig))
-    
-    # 4. Overload Summary - Greedy
-    print("  Building: Overload Summary Greedy")
-    fig = visualize_overload_summary(
-        times_time, loads_time, eval_time[9],
-        title="Greedy + Regret: Tổng quan quá tải",
-        return_fig=True,
-    )
-    figures.append(("4. Overload Greedy", fig))
-    
-    # 5. Heatmap all edges - Baseline
-    print(f"  Building: Heatmap {n_edges} edges Baseline")
-    fig = visualize_edge_load_timeline(
-        times_baseline, loads_baseline, eval_baseline[9],
-        eval_baseline[7], eval_baseline[8],
-        top_k_edges=n_edges, only_overloaded=False,
-        title=f"Baseline: Tất cả {n_edges} cạnh",
-        return_fig=True,
-    )
-    figures.append(("5. Heatmap Baseline", fig))
-    
-    # 6. Heatmap all edges - Greedy
-    print(f"  Building: Heatmap {n_edges} edges Greedy")
-    fig = visualize_edge_load_timeline(
-        times_time, loads_time, eval_time[9],
-        eval_time[7], eval_time[8],
-        top_k_edges=n_edges, only_overloaded=False,
-        title=f"Greedy + Regret: Tất cả {n_edges} cạnh",
-        return_fig=True,
-    )
-    figures.append(("6. Heatmap Greedy", fig))
-    
-    # 7. Gantt - Baseline
-    print("  Building: Gantt Baseline")
-    fig = visualize_edge_gantt_chart(
-        eval_baseline[5], eval_baseline[9],
-        eval_baseline[7], eval_baseline[8],
-        top_k_edges=15,
-        title="Baseline: Edge Occupancy Gantt",
-        return_fig=True,
-    )
-    figures.append(("7. Gantt Baseline", fig))
-    
-    # 8. Gantt - Greedy
-    print("  Building: Gantt Greedy")
-    fig = visualize_edge_gantt_chart(
-        eval_time[5], eval_time[9],
-        eval_time[7], eval_time[8],
-        top_k_edges=15,
-        title="Greedy + Regret: Edge Occupancy Gantt",
-        return_fig=True,
-    )
-    figures.append(("8. Gantt Greedy", fig))
+
+    print("  Building: Overload summary dropdown")
+    overload_dropdown = []
+    for name, payload in solution_payloads.items():
+        fig = visualize_overload_summary(
+            payload["times"], payload["loads"], payload["edge_bandwidth"],
+            title=f"{name}: Tổng quan quá tải",
+            return_fig=True,
+        )
+        overload_dropdown.append((name, fig))
+
+    print("  Building: Heatmap dropdown")
+    heatmap_dropdown = []
+    for name, payload in solution_payloads.items():
+        fig = visualize_edge_load_timeline(
+            payload["times"],
+            payload["loads"],
+            payload["edge_bandwidth"],
+            payload["edge_u"],
+            payload["edge_v"],
+            top_k_edges=20,
+            only_overloaded=False,
+            title=f"{name}: Heatmap + Load Timeline",
+            return_fig=True,
+            show_line_chart=True,
+        )
+        heatmap_dropdown.append((name, fig))
+
+    figures = [
+        ("Routes + Load/BW", {"type": "dropdown", "options": routes_dropdown}),
+        ("Overload Summary", {"type": "dropdown", "options": overload_dropdown}),
+        ("Heatmap + Timeline", {"type": "dropdown", "options": heatmap_dropdown}),
+    ]
     
     # ============================================================
     # 6. Export to single HTML with tabs

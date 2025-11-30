@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 
 
 def export_figures_to_tabbed_html(
-    figures: List[Tuple[str, go.Figure]],
+    figures: List[Tuple[str, object]],
     output_path: str,
     title: str = "Traffic Simulation Results",
 ) -> None:
@@ -23,26 +23,50 @@ def export_figures_to_tabbed_html(
     fig_divs = []
     tab_buttons = []
     
-    for i, (tab_name, fig) in enumerate(figures):
-        # Get the inner HTML of the figure (without full HTML wrapper)
-        fig_html = fig.to_html(
-            full_html=False,
-            include_plotlyjs=False,
-            div_id=f"fig-{i}",
-        )
-        
-        # Create tab content div - all visible initially, will hide via JS
-        fig_divs.append(f'''
+    dropdown_scripts = []
+    for i, (tab_name, fig_data) in enumerate(figures):
+        content_html = ""
+        if isinstance(fig_data, dict) and fig_data.get("type") == "dropdown":
+            dropdown_id = f"dropdown-{i}"
+            options = fig_data.get("options", [])
+            option_buttons = []
+            option_divs = []
+            for j, (opt_name, opt_fig) in enumerate(options):
+                fig_html = opt_fig.to_html(full_html=False, include_plotlyjs=False, div_id=f"fig-{i}-{j}")
+                active_cls = "active" if j == 0 else ""
+                option_buttons.append(
+                    f"<button class='dropdown-option {active_cls}' data-target='tab-{i}-opt-{j}'>" f"{opt_name}</button>"
+                )
+                style = "display:block" if j == 0 else "display:none"
+                option_divs.append(
+                    f"<div id='tab-{i}-opt-{j}' class='dropdown-panel' style='{style}'>" f"{fig_html}</div>"
+                )
+            content_html = f"""
+            <div class="dropdown-wrapper" id="{dropdown_id}">
+                <div class="dropdown-buttons">
+                    {''.join(option_buttons)}
+                </div>
+                {''.join(option_divs)}
+            </div>
+            """
+            dropdown_scripts.append(
+                f"initDropdown('{dropdown_id}');"
+            )
+        else:
+            fig = fig_data if isinstance(fig_data, go.Figure) else fig_data["figure"]
+            fig_html = fig.to_html(full_html=False, include_plotlyjs=False, div_id=f"fig-{i}")
+            content_html = fig_html
+
+        fig_divs.append(f"""
         <div id="tab-{i}" class="tab-content">
-            {fig_html}
+            {content_html}
         </div>
-        ''')
-        
-        # Create tab button
+        """)
+
         active_class = "active" if i == 0 else ""
-        tab_buttons.append(f'''
+        tab_buttons.append(f"""
             <button class="tab-btn {active_class}" onclick="openTab(event, 'tab-{i}')">{tab_name}</button>
-        ''')
+        """)
     
     # Full HTML template
     html_content = f'''<!DOCTYPE html>
@@ -100,6 +124,33 @@ def export_figures_to_tabbed_html(
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }}
+
+        .dropdown-wrapper {{
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }}
+
+        .dropdown-buttons {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+        }}
+
+        .dropdown-option {{
+            padding: 8px 16px;
+            border: 1px solid #ccc;
+            background-color: #fafafa;
+            border-radius: 4px;
+            cursor: pointer;
+        }}
+
+        .dropdown-option.active {{
+            background-color: #1976d2;
+            color: white;
+            border-color: #0f5ba5;
+        }}
+
         
         .summary {{
             background-color: #fff;
@@ -146,6 +197,33 @@ def export_figures_to_tabbed_html(
                 }});
             }}, 100);
         }}
+
+        function initDropdown(wrapperId) {{
+            var wrapper = document.getElementById(wrapperId);
+            if (!wrapper) return;
+            var buttons = wrapper.getElementsByClassName('dropdown-option');
+            for (var i = 0; i < buttons.length; i++) {{
+                buttons[i].addEventListener('click', function(evt) {{
+                    var targetId = this.getAttribute('data-target');
+                    var panels = wrapper.getElementsByClassName('dropdown-panel');
+                    for (var j = 0; j < panels.length; j++) {{
+                        panels[j].style.display = 'none';
+                    }}
+                    wrapper.querySelectorAll('.dropdown-option').forEach(function(btn) {{
+                        btn.classList.remove('active');
+                    }});
+                    document.getElementById(targetId).style.display = 'block';
+                    this.classList.add('active');
+                    setTimeout(function() {{
+                        var plotDivs = document.querySelectorAll('#' + targetId + ' .plotly-graph-div');
+                        plotDivs.forEach(function(plotDiv) {{
+                            Plotly.Plots.resize(plotDiv);
+                            Plotly.relayout(plotDiv, {{}});
+                        }});
+                    }}, 100);
+                }});
+            }}
+        }}
         
         // After page loads: resize all plots, then hide non-active tabs
         window.onload = function() {{
@@ -162,6 +240,9 @@ def export_figures_to_tabbed_html(
                     tabContents[i].style.display = "none";
                 }}
             }}, 500);
+
+            // Initialize dropdowns
+            {''.join(dropdown_scripts)}
         }};
     </script>
 </body>

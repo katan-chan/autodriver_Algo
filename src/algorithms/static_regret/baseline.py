@@ -1,10 +1,12 @@
 """Baseline solver where each vehicle takes the single shortest path."""
 
 import numpy as np
+from numba import njit
 
-from .dijkstra import dijkstra_shortest_path
+from ..common.dijkstra import dijkstra_shortest_path
 
 
+@njit
 def solve_routing_without_penalty(
     adjacency_travel_time: np.ndarray,
     vehicle_origin: np.ndarray,
@@ -23,6 +25,7 @@ def solve_routing_without_penalty(
         target = int(vehicle_destination[vehicle])
         cost, path = dijkstra_shortest_path(adjacency_travel_time, source, target)
         route_costs[vehicle] = cost
-        routes[vehicle] = path
+        for node_idx in range(n_nodes):
+            routes[vehicle, node_idx] = path[node_idx]
 
     return routes, route_costs
