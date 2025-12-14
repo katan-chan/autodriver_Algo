@@ -18,8 +18,16 @@ def generate_planar_traffic_data(
     time_factor_high: float = 90.0,
     seed: int = 42,
     time_window_seconds: float = 300.0,
+    uniform_travel_time: bool = False,  # Nếu True, tất cả cạnh có travel_time = 1
+    uniform_start_time: bool = True,    # Mặc định: tất cả xe xuất phát tại t = 0
 ) -> Dict[str, np.ndarray]:
-    """Generate synthetic planar traffic data with per-edge bandwidth and travel time."""
+    """Generate synthetic planar traffic data with per-edge bandwidth and travel time.
+    
+    Note on start_time semantics:
+    - start_time = thời điểm xe SẴN SÀNG vào cạnh đầu tiên (đã ở node xuất phát)
+    - Ví dụ: start_time=0 nghĩa là xe tại node origin, sẵn sàng đi ngay tại t=0
+    - Xe VÀO cạnh đầu tiên ngay tại start_time, KHÔNG cần delay thêm
+    """
 
     rng = np.random.default_rng(seed)
 
@@ -117,22 +125,30 @@ def generate_planar_traffic_data(
         du = node_coords[u] - node_coords[v]
         dist = float(np.linalg.norm(du))
 
-        # travel time = dist * factor_e
-        t = dist * edge_time_factor[k]
+        # travel time: uniform = 1.0 hoặc random theo dist * factor
+        if uniform_travel_time:
+            t = 1.0
+        else:
+            t = dist * edge_time_factor[k]
         edge_travel_time[k] = t
 
         B = edge_bandwidth[k]
         adj_bandwidth[u, v] = adj_bandwidth[v, u] = B
         adj_travel[u, v] = adj_travel[v, u] = t
 
-    # =============== 5. Sinh request (5 phút) ===============
+    # =============== 5. Sinh request ===============
     origins = rng.integers(0, n_nodes, size=n_vehicles)
     destinations = rng.integers(0, n_nodes, size=n_vehicles)
     for i in range(n_vehicles):
         if origins[i] == destinations[i]:
             choices = np.setdiff1d(np.arange(n_nodes), [origins[i]])
             destinations[i] = rng.choice(choices)
-    start_times = rng.uniform(0, time_window_seconds, size=n_vehicles)
+    
+    # Start time: uniform = 0 hoặc random trong time_window
+    if uniform_start_time:
+        start_times = np.zeros(n_vehicles, dtype=float)
+    else:
+        start_times = rng.uniform(0, time_window_seconds, size=n_vehicles)
 
     # =============== 6. Gói toàn bộ dữ liệu vào 1 dict duy nhất ===============
     data = dict(

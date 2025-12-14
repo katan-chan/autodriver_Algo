@@ -1,4 +1,8 @@
-"""Greedy + regret assignment with time-based bandwidth tracking - Numba compatible."""
+"""Greedy + regret assignment with HARD capacity constraints - Numba compatible.
+
+This version enforces strict bandwidth limits: a path is rejected if any edge
+would exceed capacity at any time. T1 and T2 are computed only from feasible paths.
+"""
 
 import numpy as np
 from numba import njit
@@ -222,119 +226,6 @@ def _add_vehicle_to_edge(
 
 
 @njit
-def _compute_time_penalty_for_path(
-    path: np.ndarray,
-    start_time: float,
-    base_cost: float,
-    adjacency_travel_time: np.ndarray,
-    edge_index_matrix: np.ndarray,
-    edge_bandwidth: np.ndarray,
-    edge_time_slots: np.ndarray,
-    beta_penalty: float,
-    n_nodes: int,
-) -> float:
-    """Compute cost with time-based penalty."""
-    if base_cost == np.inf:
-        return np.inf
-
-    total_penalty = 0.0
-    current_time = start_time
-
-    for i in range(n_nodes - 1):
-        u = path[i]
-        v = path[i + 1]
-
-        if v < 0:
-            break
-
-        edge_idx = edge_index_matrix[u, v]
-        if edge_idx < 0:
-            continue
-
-        travel_time = adjacency_travel_time[u, v]
-        if travel_time == np.inf:
-            break
-
-        entry_time = current_time
-        
-        # Count current load in this time interval (tạm tính với travel_time gốc)
-        temp_exit_time = current_time + travel_time
-        current_load = _count_vehicles_in_interval(
-            edge_time_slots, edge_idx, entry_time, temp_exit_time
-        )
-
-        bandwidth = edge_bandwidth[edge_idx]
-        new_load = float(current_load) + 1.0
-        overflow_ratio = new_load / bandwidth - 1.0
-
-        if overflow_ratio > 0.0:
-            # Penalty time: làm chậm xe do tắc đường
-            penalty_time = travel_time * (np.exp(beta_penalty * overflow_ratio) - 1.0)
-            total_penalty += penalty_time
-            # Exit time bao gồm cả penalty (xe đi chậm hơn)
-            exit_time = current_time + travel_time + penalty_time
-        else:
-            exit_time = current_time + travel_time
-
-        current_time = exit_time
-
-    return base_cost + total_penalty
-
-
-@njit
-def _add_path_to_time_slots(
-    edge_time_slots: np.ndarray,
-    path: np.ndarray,
-    start_time: float,
-    adjacency_travel_time: np.ndarray,
-    edge_index_matrix: np.ndarray,
-    edge_bandwidth: np.ndarray,
-    beta_penalty: float,
-    n_nodes: int,
-) -> None:
-    """Add entire path to time slots, accounting for penalty delays."""
-    current_time = start_time
-
-    for i in range(n_nodes - 1):
-        u = path[i]
-        v = path[i + 1]
-
-        if v < 0:
-            break
-
-        edge_idx = edge_index_matrix[u, v]
-        if edge_idx < 0:
-            continue
-
-        travel_time = adjacency_travel_time[u, v]
-        if travel_time == np.inf:
-            break
-
-        entry_time = current_time
-        
-        # Tính penalty dựa trên load hiện tại
-        temp_exit_time = current_time + travel_time
-        current_load = _count_vehicles_in_interval(
-            edge_time_slots, edge_idx, entry_time, temp_exit_time
-        )
-        
-        bandwidth = edge_bandwidth[edge_idx]
-        new_load = float(current_load) + 1.0
-        overflow_ratio = new_load / bandwidth - 1.0
-        
-        if overflow_ratio > 0.0:
-            # Có penalty, xe đi chậm hơn
-            penalty_time = travel_time * (np.exp(beta_penalty * overflow_ratio) - 1.0)
-            exit_time = current_time + travel_time + penalty_time
-        else:
-            exit_time = current_time + travel_time
-
-        _add_vehicle_to_edge(edge_time_slots, edge_idx, entry_time, exit_time)
-
-        current_time = exit_time
-
-
-@njit
 def _build_edge_list_numba(adjacency_bandwidth: np.ndarray) -> tuple:
     """Build edge list from adjacency matrix."""
     n_nodes = adjacency_bandwidth.shape[0]
@@ -366,27 +257,112 @@ def _build_edge_list_numba(adjacency_bandwidth: np.ndarray) -> tuple:
 
 
 @njit
-def solve_routing_with_time_penalty_greedy_regret(
+def _is_path_feasible(
+    path: np.ndarray,
+    start_time: float,
+    adjacency_travel_time: np.ndarray,
+    edge_index_matrix: np.ndarray,
+    edge_bandwidth: np.ndarray,
+    edge_time_slots: np.ndarray,
+    n_nodes: int,
+) -> bool:
+    """
+    Check if a path satisfies hard capacity constraint.
+    
+    Returns True if all edges on the path have sufficient capacity,
+    False otherwise.
+    """
+    current_time = start_time
+
+    for i in range(n_nodes - 1):
+        u = path[i]
+        v = path[i + 1]
+
+        if v < 0:
+            break
+
+        edge_idx = edge_index_matrix[u, v]
+        if edge_idx < 0:
+            continue
+
+        travel_time = adjacency_travel_time[u, v]
+        if travel_time == np.inf:
+            return False
+
+        entry_time = current_time
+        exit_time = current_time + travel_time
+
+        # Count current load in this time interval
+        current_load = _count_vehicles_in_interval(
+            edge_time_slots, edge_idx, entry_time, exit_time
+        )
+
+        bandwidth = edge_bandwidth[edge_idx]
+        
+        # Hard constraint: current_load + 1 must be <= bandwidth
+        if float(current_load) + 1.0 > bandwidth:
+            return False
+
+        current_time = exit_time
+
+    return True
+
+
+@njit
+def _add_path_to_time_slots(
+    edge_time_slots: np.ndarray,
+    path: np.ndarray,
+    start_time: float,
+    adjacency_travel_time: np.ndarray,
+    edge_index_matrix: np.ndarray,
+    n_nodes: int,
+) -> None:
+    """Add entire path to time slots."""
+    current_time = start_time
+
+    for i in range(n_nodes - 1):
+        u = path[i]
+        v = path[i + 1]
+
+        if v < 0:
+            break
+
+        edge_idx = edge_index_matrix[u, v]
+        if edge_idx < 0:
+            continue
+
+        travel_time = adjacency_travel_time[u, v]
+        if travel_time == np.inf:
+            break
+
+        entry_time = current_time
+        exit_time = current_time + travel_time
+
+        _add_vehicle_to_edge(edge_time_slots, edge_idx, entry_time, exit_time)
+
+        current_time = exit_time
+
+
+@njit
+def solve_routing_hard_capacity_greedy_regret(
     adjacency_travel_time: np.ndarray,
     adjacency_bandwidth: np.ndarray,
     vehicle_origin: np.ndarray,
     vehicle_destination: np.ndarray,
     vehicle_start_time: np.ndarray,
     k_paths: int,
-    beta_penalty: float,
     max_slots_per_edge: int,
 ) -> tuple:
     """
-    Greedy + Regret với time-based bandwidth tracking.
+    Greedy + Regret with HARD capacity constraints.
 
     Args:
         adjacency_travel_time: (n_nodes, n_nodes) travel time matrix
-        adjacency_bandwidth: (n_nodes, n_nodes) bandwidth matrix
+        adjacency_bandwidth: (n_nodes, n_nodes) bandwidth (capacity) matrix
         vehicle_origin: (n_vehicles,) origin nodes
         vehicle_destination: (n_vehicles,) destination nodes
         vehicle_start_time: (n_vehicles,) departure times
         k_paths: number of alternative paths per vehicle
-        beta_penalty: penalty coefficient
         max_slots_per_edge: max vehicles tracked per edge
 
     Returns:
@@ -433,6 +409,7 @@ def solve_routing_with_time_penalty_greedy_regret(
             best_k_for_v[v] = -1
 
         # Compute T1, T2, regret for each unassigned vehicle
+        # T1 and T2 are computed ONLY from FEASIBLE paths
         for v in range(n_vehicles):
             if assigned[v]:
                 continue
@@ -445,17 +422,23 @@ def solve_routing_with_time_penalty_greedy_regret(
                     continue
 
                 path = all_paths[v, kk]
-                total_cost = _compute_time_penalty_for_path(
+                
+                # Check feasibility (hard constraint)
+                is_feasible = _is_path_feasible(
                     path,
                     start_time,
-                    base_cost,
                     adjacency_travel_time,
                     edge_index_matrix,
                     edge_bandwidth,
                     edge_time_slots,
-                    beta_penalty,
                     n_nodes,
                 )
+                
+                # Only consider feasible paths for T1/T2
+                if not is_feasible:
+                    continue
+
+                total_cost = base_cost  # For feasible paths, cost = base cost
 
                 if total_cost < T1[v]:
                     T2[v] = T1[v]
@@ -464,10 +447,12 @@ def solve_routing_with_time_penalty_greedy_regret(
                 elif total_cost < T2[v]:
                     T2[v] = total_cost
 
+            # Compute regret only if we have at least one feasible path
             if T1[v] < np.inf:
                 if T2[v] < np.inf:
                     regret[v] = T2[v] - T1[v]
                 else:
+                    # Only one feasible path
                     regret[v] = BIG_REGRET
 
         # Find vehicle with max regret
@@ -488,6 +473,7 @@ def solve_routing_with_time_penalty_greedy_regret(
                 best_v = v
 
         if best_v == -1:
+            # No more feasible assignments
             break
 
         # Assign best path to best vehicle
@@ -505,8 +491,6 @@ def solve_routing_with_time_penalty_greedy_regret(
             start_time,
             adjacency_travel_time,
             edge_index_matrix,
-            edge_bandwidth,
-            beta_penalty,
             n_nodes,
         )
 
