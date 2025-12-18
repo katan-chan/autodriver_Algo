@@ -269,7 +269,7 @@ def _compute_time_penalty_for_path(
 
         if overflow_ratio > 0.0:
             # Penalty time: làm chậm xe do tắc đường
-            penalty_time = travel_time * (np.exp(beta_penalty * overflow_ratio) - 1.0)
+            penalty_time = (np.exp(beta_penalty * overflow_ratio) - 1.0)
             total_penalty += penalty_time
             # Exit time bao gồm cả penalty (xe đi chậm hơn)
             exit_time = current_time + travel_time + penalty_time

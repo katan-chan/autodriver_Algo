@@ -22,10 +22,6 @@ from .time_regret.time_slots import (
     build_all_edges_load_timeline,
 )
 
-from .rank_matching.rank_max_matching import solve_rank_maximal_matching
-
-from .hard_capacity.greedy_regret_hard_capacity import solve_routing_hard_capacity_greedy_regret
-
 from .common.dijkstra import dijkstra_shortest_path
 from .common.path_cost import compute_path_travel_cost
 

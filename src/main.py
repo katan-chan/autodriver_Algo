@@ -15,7 +15,6 @@ from .visualize_html import export_figures_to_tabbed_html
 from .algorithms import (
     solve_routing_without_penalty,
     solve_routing_with_time_penalty_greedy_regret,
-    solve_rank_maximal_matching,
     evaluate_time_based_solution,
     print_time_evaluation_report,
     build_load_timeline,
